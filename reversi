@@ -1,0 +1,211 @@
+#!/usr/bin/python3
+
+from sense_hat import SenseHat
+from enum import Enum
+import copy
+import time
+
+brightness = 100
+
+class Pos():
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+
+    def move(self, direction):
+        """
+        Move with stick direction. Wraps around
+        """
+        if direction == u"left":
+            self.x = (self.x - 1) % 8
+        elif direction == u"right":
+            self.x = (self.x + 1) % 8
+        elif direction == u"up":
+            self.y = (self.y - 1) % 8
+        elif direction == u"down":
+            self.y = (self.y + 1) % 8
+
+    def move_delta(self, dx, dy):
+        """
+        Move with delta. Returns weither it would go past a wall
+        """
+        if self.x + dx < 0:
+            return True
+        elif self.x + dx > 7:
+            return True
+        if self.y + dy < 0:
+            return True
+        elif self.y + dy > 7:
+            return True
+        else:
+            self.x = self.x + dx
+            self.y = self.y + dy
+            return False
+
+    def __eq__(self, other):
+        return self.x == other.x and self.y == other.y
+
+    def __str__(self):
+        return f"Pos({self.x}, {self.y})"
+
+class Cell(Enum):
+    Empty = 0
+    Player1 = 1
+    Player2 = 2
+
+    def color(self):
+        if self == Cell.Empty:
+            return [0, 0, 0]
+        elif self == Cell.Player1:
+            return [brightness, 0, 0]
+        elif self == Cell.Player2:
+            return [0, 0, brightness]
+
+class Board():
+    def __init__(self, sense_hat):
+        self.sense_hat = sense_hat
+        self.sense_hat.set_rotation(0)
+
+        self.show_selected = False
+        self.selected = Pos(0, 0)
+        self.cells = [ Cell.Empty for _ in range(64) ]
+
+    def toggle_show_selected(self):
+        self.show_selected = not self.show_selected
+
+    def get_cell(self, pos):
+        return self.cells[pos.x + pos.y * 8]
+
+    def set_cell(self, pos, player):
+        self.cells[pos.x + pos.y * 8] = player
+
+    def cell_color(self, player, pos):
+        if self.show_selected and self.selected == pos:
+            if self.get_cell(pos) == player:
+                return Cell.color(Cell.Empty)
+            else:
+                return Cell.color(player)
+
+        cell = self.get_cell(pos)
+
+        if cell == Cell.Empty and self.would_turn(player, pos) != []:
+            return [ 0, brightness, 0 ]
+
+        return Cell.color(cell)
+
+    def render(self, player):
+        pixels = [
+            self.cell_color(player, Pos(x, y))
+
+            for y in range(8)
+            for x in range(8)
+            ]
+
+        self.sense_hat.set_pixels(pixels)
+
+    def would_turn_dir(self, player, cell_pos, dx, dy):
+        turnables = []
+        current = copy.deepcopy(cell_pos)
+        other_player = Cell.Player2 if player == Cell.Player1 else Cell.Player1
+
+        while not current.move_delta(dx, dy):
+            current_cell = self.get_cell(current)
+
+            if current_cell == other_player:
+                turnables.append(copy.deepcopy(current))
+            elif current_cell == player:
+                return turnables
+            else:
+                return []
+
+        return []
+
+    def would_turn(self, player, cell_pos):
+        turnables = []
+
+        deltas = [-1, 0, 1]
+        dirs = [
+            (dx, dy)
+            for dy in deltas
+            for dx in deltas
+            if dx != 0 or dy != 0] 
+
+        for (dx, dy) in dirs:
+            turnables.extend(self.would_turn_dir(player, cell_pos, dx, dy))
+
+        return turnables
+
+    def all_would_turn(self, player):
+        empty_cells = [
+            Pos(x, y)
+            for y in range(8)
+            for x in range(8)
+            if self.get_cell(Pos(x, y)) == Cell.Empty
+            ]
+        turnables = []
+        for cell_pos in empty_cells:
+            turnables.extend(self.would_turn(player, cell_pos))
+
+        return turnables
+
+class Game():
+    def __init__(self, sense_hat):
+        self.board = Board(sense_hat)
+        sense_hat.stick.direction_any = self.handle_event
+
+        self.board.set_cell(Pos(3, 3), Cell.Player1)
+        self.board.set_cell(Pos(4, 4), Cell.Player1)
+
+        self.board.set_cell(Pos(3, 4), Cell.Player2)
+        self.board.set_cell(Pos(4, 3), Cell.Player2)
+
+        self.current_player = Cell.Player1
+
+    def swap_player(self):
+        if self.current_player == Cell.Player1:
+            self.current_player = Cell.Player2
+        else:
+            self.current_player = Cell.Player1
+
+    def play(self):
+        pos = self.board.selected
+        turnables = self.board.would_turn(self.current_player, pos)
+
+        if turnables != []:
+            self.board.set_cell(pos, self.current_player)
+            for cell_pos in turnables:
+                self.board.set_cell(cell_pos, self.current_player)
+
+            self.swap_player()
+
+            if self.board.all_would_turn(self.current_player) == []:
+                self.swap_player()
+
+        self.board.render(self.current_player)
+
+    def start(self):
+        while True:
+            self.board.toggle_show_selected()
+            self.board.render(self.current_player)
+            time.sleep(0.25)
+    
+    def handle_event(self, event):
+        (_, direction, action) = event
+
+        if action == u"pressed":
+            self.board.selected.move(direction)
+            self.board.show_selected = True
+            print(self.board.selected, direction)
+
+            if direction == u"middle":
+                self.play()
+
+            self.board.render(self.current_player)
+
+def main():
+    sense_hat = SenseHat()
+
+    game = Game(sense_hat)
+    game.start()
+
+if __name__ == "__main__":
+    main()
